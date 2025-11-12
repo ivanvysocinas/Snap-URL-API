@@ -370,54 +370,20 @@ clickSchema.pre("save", function (next) {
 });
 
 /**
- * Pre-save middleware to parse user agent and detect devices/bots
+ * Pre-save middleware to detect bots
  */
 clickSchema.pre("save", async function (next) {
   if (this.isNew && this.userAgent) {
     try {
-      // Dynamic import to avoid loading issues
-      const { default: parser } = await import("ua-parser-js");
-      const UAParser = parser;
-
-      const ua = new UAParser(this.userAgent);
-      const result = ua.getResult();
-
-      this.device = {
-        type: this.determineDeviceType(result),
-        browser: result.browser.name || "Unknown",
-        browserVersion: result.browser.version || "Unknown",
-        engine: result.engine.name || "Unknown",
-        os: result.os.name || "Unknown",
-        osVersion: result.os.version || "Unknown",
-      };
-
       // Bot detection
       this.isBot = this.detectBot(this.userAgent);
     } catch (error) {
-      console.error("User agent parsing failed:", error.message);
-      // Set default values
-      this.device = {
-        type: "unknown",
-        browser: "Unknown",
-        os: "Unknown",
-      };
+      console.error("Bot detection failed: ", error.message);
     }
   }
 
   next();
 });
-
-/**
- * Instance method to determine device type from parsed UA
- * @param {Object} uaResult - Parsed user agent result
- * @returns {string} Device type
- */
-clickSchema.methods.determineDeviceType = function (uaResult) {
-  if (uaResult.device.type === "mobile") return "mobile";
-  if (uaResult.device.type === "tablet") return "tablet";
-  if (this.isBot) return "bot";
-  return "desktop";
-};
 
 /**
  * Instance method to detect if user agent is a bot

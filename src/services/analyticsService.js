@@ -130,6 +130,7 @@ class AnalyticsService {
         userId = null,
         customData = {},
         sessionId = null,
+        device
       } = clickData;
 
       // Use enhanced IP normalization
@@ -159,6 +160,7 @@ class AnalyticsService {
         isUnique,
         sessionId,
         customData,
+        device,
         // Add IP metadata for debugging
         ipMetadata:
           process.env.NODE_ENV === "development"

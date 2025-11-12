@@ -21,6 +21,8 @@ export const handleRedirect = async (req, res, next) => {
     const userAgent = req.get("User-Agent") || null;
     const referrer = req.get("Referrer") || req.get("Referer") || null;
 
+    const device = parseUserAgent(userAgent)
+
     // Get URL by short code
     const url = await urlService.getUrlByShortCode(shortCode);
 
@@ -41,6 +43,7 @@ export const handleRedirect = async (req, res, next) => {
     // Record the click asynchronously (don't block the redirect)
     const clickData = {
       urlId: url._id,
+      device: device,
       ipAddress,
       userAgent,
       referrer,
@@ -73,6 +76,79 @@ export const handleRedirect = async (req, res, next) => {
     );
   }
 };
+
+// Determining the device type
+
+function parseUserAgent(userAgent) {
+  const ua = userAgent || navigator.userAgent;
+  
+  // Device Type
+  let type = 'desktop';
+  if (/(tablet|ipad|playbook|silk)|(android(?!.*mobi))/i.test(ua)) {
+    type = 'tablet';
+  } else if (/Mobile|Android|iP(hone|od)|IEMobile|BlackBerry|Kindle|Silk-Accelerated|(hpw|web)OS|Opera M(obi|ini)/.test(ua)) {
+    type = 'mobile';
+  }
+  
+  // Browser Detection
+  let browser = 'Unknown';
+  let browserVersion = '';
+  
+  const browserPatterns = [
+    { name: 'Edge', pattern: /Edg\/([0-9.]+)/ },
+    { name: 'Chrome', pattern: /Chrome\/([0-9.]+)/, exclude: /Edg/ },
+    { name: 'Safari', pattern: /Version\/([0-9.]+).*Safari/, exclude: /Chrome/ },
+    { name: 'Firefox', pattern: /Firefox\/([0-9.]+)/ },
+    { name: 'Opera', pattern: /(?:Opera|OPR)\/([0-9.]+)/ },
+    { name: 'IE', pattern: /(?:MSIE |rv:)([0-9.]+)/ }
+  ];
+  
+  for (const { name, pattern, exclude } of browserPatterns) {
+    if ((!exclude || !exclude.test(ua)) && pattern.test(ua)) {
+      browser = name;
+      const match = ua.match(pattern);
+      browserVersion = match ? match[1] : '';
+      break;
+    }
+  }
+  
+  // OS Detection
+  let os = 'Unknown';
+  let osVersion = '';
+  
+  if (ua.includes('Windows NT 10.0')) {
+    os = 'Windows';
+    osVersion = '10/11';
+  } else if (ua.includes('Windows NT')) {
+    os = 'Windows';
+    const versionMatch = ua.match(/Windows NT ([0-9.]+)/);
+    osVersion = versionMatch ? versionMatch[1] : '';
+  } else if (ua.includes('Mac OS X')) {
+    os = 'macOS';
+    const versionMatch = ua.match(/Mac OS X ([0-9_]+)/);
+    osVersion = versionMatch ? versionMatch[1].replace(/_/g, '.') : '';
+  } else if (ua.includes('iPhone')) {
+    os = 'iOS';
+    const versionMatch = ua.match(/OS ([0-9_]+)/);
+    osVersion = versionMatch ? versionMatch[1].replace(/_/g, '.') : '';
+  } else if (ua.includes('iPad')) {
+    os = 'iPadOS';
+    const versionMatch = ua.match(/OS ([0-9_]+)/);
+    osVersion = versionMatch ? versionMatch[1].replace(/_/g, '.') : '';
+  } else if (ua.includes('Android')) {
+    os = 'Android';
+    const versionMatch = ua.match(/Android ([0-9.]+)/);
+    osVersion = versionMatch ? versionMatch[1] : '';
+  } else if (ua.includes('Linux')) {
+    os = 'Linux';
+  }
+  
+  return {
+    type,
+    browser: browserVersion ? `${browser} ${browserVersion}` : browser,
+    os: osVersion ? `${os} ${osVersion}` : os
+  };
+}
 
 /**
  * Get redirect preview (shows destination without redirecting)

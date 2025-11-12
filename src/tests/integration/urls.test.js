@@ -351,7 +351,7 @@ describe("URL Routes", () => {
         ).toBe(3);
         expect(
           response.body.data.errorCount || response.body.data.errors || 0
-        ).toBe(0);
+        ).toStrictEqual([]);
       } else {
         // Fallback: just check success
         expect(response.body.success).toBe(true);
@@ -379,7 +379,7 @@ describe("URL Routes", () => {
         const errorCount =
           response.body.data.errorCount || response.body.data.errors || 1;
         expect(successCount).toBeGreaterThanOrEqual(1);
-        expect(errorCount).toBeGreaterThanOrEqual(1);
+        expect(errorCount.length).toBeGreaterThanOrEqual(1);
       } else {
         expect(response.body.success).toBe(true);
       }
