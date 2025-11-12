@@ -1,6 +1,5 @@
 import express from "express";
 import { createServer } from "http";
-import { Server } from "socket.io";
 import cors from "cors";
 import helmet from "helmet";
 import morgan from "morgan";
@@ -11,6 +10,7 @@ import swaggerUi from "swagger-ui-express";
 // Import configurations
 import connectDB from "./config/db.js";
 import { config } from "./config/config.js";
+import { initializeSocket } from "./sockets/index.js";
 
 // Import middleware
 import { errorHandler } from "./middleware/errorHandler.js";
@@ -24,13 +24,8 @@ import redirectRoutes from "./routes/redirect.js";
 const app = express();
 const server = createServer(app);
 
-const io = new Server(server, {
-  cors: {
-    origin: config.corsOrigin,
-    credentials: true,
-    methods: ["GET", "POST"]
-  }
-});
+// Initialize Socket.io
+const io = initializeSocket(server);
 
 // Connect to database
 if (process.env.NODE_ENV !== "test") {
@@ -49,7 +44,7 @@ app.use(
 app.use(morgan(config.nodeEnv === "development" ? "dev" : "combined"));
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true }));
-app.set('trust proxy', 1);
+app.set("trust proxy", 1);
 
 // Rate limiting
 if (process.env.NODE_ENV !== "test") {
@@ -98,25 +93,6 @@ app.use("/api/analytics", analyticsRoutes);
 // Redirect routes (no /api prefix for clean short URLs)
 app.use("/", redirectRoutes);
 
-// Socket.io connection handling
-io.on('connection', (socket) => {
-  console.log('🔌 Client connected:', socket.id);
-
-  socket.on('subscribe:url', (shortCode) => {
-    socket.join(`url:${shortCode}`);
-    console.log(`📊 Client ${socket.id} subscribed to ${shortCode}`);
-  });
-
-  socket.on('unsubscribe:url', (shortCode) => {
-    socket.leave(`url:${shortCode}`);
-    console.log(`📊 Client ${socket.id} unsubscribed from ${shortCode}`);
-  });
-
-  socket.on('disconnect', () => {
-    console.log('🔌 Client disconnected:', socket.id);
-  });
-});
-
 // Global error handler
 app.use(errorHandler);
 
@@ -140,5 +116,6 @@ if (process.env.NODE_ENV !== "test") {
     console.log("✨ Ready to shorten URLs!");
   });
 }
+
 export { io };
 export default app;

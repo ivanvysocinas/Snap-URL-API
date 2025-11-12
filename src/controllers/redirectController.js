@@ -3,6 +3,8 @@ import analyticsService from "../services/analyticsService.js";
 import Click from "../models/Click.js";
 import { ApiResponse } from "../utils/responses.js";
 import { io } from "../server.js";
+import URL from "../models/URL.js";
+import { config } from "../config/config.js";
 
 /**
  * Redirect Controller for SnapURL
@@ -18,7 +20,8 @@ export const handleRedirect = async (req, res, next) => {
   try {
     const { shortCode } = req.params;
 
-    if (req.method === 'HEAD') {
+    if (req.method === "HEAD") {
+      console.log('⛔ Blocked HEAD request');
       return res.status(200).end();
     }
 
@@ -55,50 +58,112 @@ export const handleRedirect = async (req, res, next) => {
 
     await analyticsService.recordClick(clickData);
 
+    res.redirect(302, url.originalUrl);
+
     setImmediate(async () => {
       try {
         const now = new Date();
         const fiveMinutesAgo = new Date(now - 5 * 60 * 1000);
         const oneHourAgo = new Date(now - 60 * 60 * 1000);
 
-        const [clicksLast5Min, clicksLastHour, uniqueVisitors, activeCountries] = await Promise.all([
+        const [
+          clicksLast5Min,
+          clicksLastHour,
+          uniqueVisitors,
+          activeCountries,
+          allUniqueVisitors,
+          globalClicksLastHour,
+          globalActiveCountries,
+          topActiveUrls,
+        ] = await Promise.all([
           Click.countDocuments({
             urlId: url._id,
-            clickedAt: { $gte: fiveMinutesAgo }
+            clickedAt: { $gte: fiveMinutesAgo },
           }),
           Click.countDocuments({
             urlId: url._id,
-            clickedAt: { $gte: oneHourAgo }
+            clickedAt: { $gte: oneHourAgo },
           }),
           Click.aggregate([
             {
               $match: {
                 urlId: url._id,
-                clickedAt: { $gte: oneHourAgo }
-              }
+                clickedAt: { $gte: oneHourAgo },
+              },
             },
             {
               $group: {
-                _id: "$ipAddress"
-              }
+                _id: "$ipAddress",
+              },
             },
             {
-              $count: "total"
-            }
-          ]).then(result => result[0]?.total || 0),
+              $count: "total",
+            },
+          ]).then((result) => result[0]?.total || 0),
           Click.aggregate([
             {
               $match: {
                 urlId: url._id,
-                clickedAt: { $gte: oneHourAgo }
-              }
+                clickedAt: { $gte: oneHourAgo },
+              },
             },
             {
               $group: {
-                _id: "$location.country"
-              }
+                _id: "$location.country",
+              },
+            },
+          ]).then((result) => result.map((r) => r._id).filter((c) => c)),
+
+          Click.aggregate([
+            {
+              $match: {
+                clickedAt: { $gte: oneHourAgo },
+              },
+            },
+            {
+              $group: {
+                _id: "$ipAddress",
+              },
+            },
+            {
+              $count: "total",
+            },
+          ]).then((result) => result[0]?.total || 0),
+
+          Click.countDocuments({
+            clickedAt: { $gte: oneHourAgo },
+          }),
+
+          Click.aggregate([
+            {
+              $match: {
+                clickedAt: { $gte: oneHourAgo },
+              },
+            },
+            {
+              $group: {
+                _id: "$location.country",
+              },
+            },
+            {
+              $count: "total",
+            },
+          ]).then((result) => result[0]?.total || 0),
+
+          URL.find(
+            {
+              lastClickedAt: { $gte: oneHourAgo },
+            },
+            {
+              shortCode: 1,
+              title: 1,
+              clickCount: 1,
+              uniqueClicks: 1,
+              lastClickedAt: 1,
             }
-          ]).then(result => result.map(r => r._id).filter(c => c))
+          )
+            .sort({ lastClickedAt: -1 })
+            .limit(5),
         ]);
 
         io.to(`url:${shortCode}`).emit("realtime:update", {
@@ -106,14 +171,32 @@ export const handleRedirect = async (req, res, next) => {
           clicksLastHour: clicksLastHour,
           activeCountries: activeCountries,
           uniqueVisitorsLastHour: uniqueVisitors,
-          lastUpdated: now.toISOString()
+          lastUpdated: now.toISOString(),
+        });
+
+        io.to("real-time").emit("real-time:analytics", {
+          timeWindow: "60min",
+          statistics: {
+            recentClicks: globalClicksLastHour,
+            activeUrls: topActiveUrls.length,
+            activeCountries: globalActiveCountries,
+            avgClicksPerMinute:
+              Math.round((globalClicksLastHour / 60) * 100) / 100,
+          },
+          activeUrls: topActiveUrls.map((url) => ({
+            shortUrl: `${config.baseUrl}/${url.shortCode}`,
+            title: url.title || null,
+            clickCount: url.clickCount,
+            uniqueVisitors: url.uniqueClicks,
+            lastClick: url.lastClickedAt,
+          })),
+          liveVisitors: allUniqueVisitors,
+          lastUpdated: now.toISOString(),
         });
       } catch (error) {
         console.error("Real-time analytics error:", error);
       }
     });
-
-    res.redirect(302, url.originalUrl);
   } catch (error) {
     console.error("Redirect error:", error);
 
@@ -309,7 +392,7 @@ export const handleTrackedRedirect = async (req, res, next) => {
     let destinationUrl = url.originalUrl;
 
     // If destination URL already has query parameters, append; otherwise, add them
-    const urlObj = new URL(destinationUrl);
+    const urlObj = new globalThis.URL(destinationUrl);
     if (utm_source) urlObj.searchParams.set("utm_source", utm_source);
     if (utm_medium) urlObj.searchParams.set("utm_medium", utm_medium);
     if (utm_campaign) urlObj.searchParams.set("utm_campaign", utm_campaign);
@@ -368,6 +451,10 @@ export const getPublicStats = async (req, res, next) => {
 export const handleQRRedirect = async (req, res, next) => {
   try {
     const { shortCode } = req.params;
+
+    if (req.method === "HEAD") {
+      return res.status(200).end();
+    }
 
     // Extract client information
     const ipAddress = req.ip || req.connection.remoteAddress || "127.0.0.1";
@@ -486,6 +573,11 @@ export const validateBatchRedirects = async (req, res, next) => {
 export const handlePasswordProtectedRedirect = async (req, res, next) => {
   try {
     const { shortCode } = req.params;
+
+    if (req.method === "HEAD") {
+      return res.status(200).end();
+    }
+
     const { password } = req.body;
 
     if (!password) {

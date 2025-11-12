@@ -124,7 +124,7 @@ class AnalyticsService {
       const {
         urlId,
         ipAddress: rawIpAddress,
-        headers = {}, // Add headers parameter
+        headers = {},
         userAgent = null,
         referrer = null,
         userId = null,
@@ -135,6 +135,30 @@ class AnalyticsService {
 
       // Use enhanced IP normalization
       const ipAddress = this._normalizeIpAddress(rawIpAddress, headers);
+
+      const dedupKey = `${urlId}_${ipAddress}_${userAgent || 'no-ua'}`;
+      const now = Date.now();
+      
+      const lastClick = this.recentClicks?.get(dedupKey);
+      if (lastClick && (now - lastClick) < 2000) {
+        const url = await URL_MODEL.findById(urlId);
+        return {
+          click: null,
+          redirectUrl: url?.originalUrl,
+          analytics: {
+            totalClicks: url?.clickCount || 0,
+            uniqueClicks: url?.uniqueClicks || 0,
+            isDuplicate: true,
+          },
+        };
+      }
+      
+      if (!this.recentClicks) {
+        this.recentClicks = new Map();
+      }
+      this.recentClicks.set(dedupKey, now);
+      
+      setTimeout(() => this.recentClicks.delete(dedupKey), 1000);
 
       // Find the URL document
       const url = await URL_MODEL.findById(urlId);
@@ -161,7 +185,6 @@ class AnalyticsService {
         sessionId,
         customData,
         device,
-        // Add IP metadata for debugging
         ipMetadata:
           process.env.NODE_ENV === "development"
             ? {

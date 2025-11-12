@@ -90,8 +90,9 @@ describe("Redirect Routes", () => {
       const response = await request(app)
         .get("/redirect123/track")
         .set("User-Agent", "Mozilla/5.0 (Test Browser)")
-        .set("X-Forwarded-For", "192.168.1.1")
-        .expect(302);
+        .set("X-Forwarded-For", "192.168.1.1");
+
+      expect(response.status).toBe(302);
 
       expect(response.headers.location).toBe("https://example.com/");
     });
