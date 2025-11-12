@@ -1,6 +1,8 @@
 import urlService from "../services/urlService.js";
 import analyticsService from "../services/analyticsService.js";
+import Click from "../models/Click.js";
 import { ApiResponse } from "../utils/responses.js";
+import { io } from "../server.js";
 
 /**
  * Redirect Controller for SnapURL
@@ -16,18 +18,19 @@ export const handleRedirect = async (req, res, next) => {
   try {
     const { shortCode } = req.params;
 
-    // Extract client information
+    if (req.method === 'HEAD') {
+      return res.status(200).end();
+    }
+
     const ipAddress = req.ip || req.connection.remoteAddress || "127.0.0.1";
     const userAgent = req.get("User-Agent") || null;
     const referrer = req.get("Referrer") || req.get("Referer") || null;
 
-    const device = parseUserAgent(userAgent)
+    const device = parseUserAgent(userAgent);
 
-    // Get URL by short code
     const url = await urlService.getUrlByShortCode(shortCode);
 
     if (!url) {
-      // Return a user-friendly 404 page or redirect to error page
       return res.status(404).json(
         ApiResponse.error(
           "Short URL not found or expired",
@@ -40,30 +43,80 @@ export const handleRedirect = async (req, res, next) => {
       );
     }
 
-    // Record the click asynchronously (don't block the redirect)
     const clickData = {
       urlId: url._id,
       device: device,
       ipAddress,
       userAgent,
       referrer,
-      userId: null, // Anonymous click
+      userId: null,
       sessionId: req.sessionID || null,
     };
 
-    // Record click without waiting (fire and forget)
-    analyticsService.recordClick(clickData).catch((error) => {
-      console.error("Click recording failed:", error);
-      // Don't block redirect even if analytics fail
+    await analyticsService.recordClick(clickData);
+
+    setImmediate(async () => {
+      try {
+        const now = new Date();
+        const fiveMinutesAgo = new Date(now - 5 * 60 * 1000);
+        const oneHourAgo = new Date(now - 60 * 60 * 1000);
+
+        const [clicksLast5Min, clicksLastHour, uniqueVisitors, activeCountries] = await Promise.all([
+          Click.countDocuments({
+            urlId: url._id,
+            clickedAt: { $gte: fiveMinutesAgo }
+          }),
+          Click.countDocuments({
+            urlId: url._id,
+            clickedAt: { $gte: oneHourAgo }
+          }),
+          Click.aggregate([
+            {
+              $match: {
+                urlId: url._id,
+                clickedAt: { $gte: oneHourAgo }
+              }
+            },
+            {
+              $group: {
+                _id: "$ipAddress"
+              }
+            },
+            {
+              $count: "total"
+            }
+          ]).then(result => result[0]?.total || 0),
+          Click.aggregate([
+            {
+              $match: {
+                urlId: url._id,
+                clickedAt: { $gte: oneHourAgo }
+              }
+            },
+            {
+              $group: {
+                _id: "$location.country"
+              }
+            }
+          ]).then(result => result.map(r => r._id).filter(c => c))
+        ]);
+
+        io.to(`url:${shortCode}`).emit("realtime:update", {
+          clicksLast5Minutes: clicksLast5Min,
+          clicksLastHour: clicksLastHour,
+          activeCountries: activeCountries,
+          uniqueVisitorsLastHour: uniqueVisitors,
+          lastUpdated: now.toISOString()
+        });
+      } catch (error) {
+        console.error("Real-time analytics error:", error);
+      }
     });
 
-    // Perform the redirect
     res.redirect(302, url.originalUrl);
   } catch (error) {
-    // Even if there's an error, try to redirect if we have the original URL
     console.error("Redirect error:", error);
 
-    // Return error response instead of redirect if we can't proceed
     res.status(500).json(
       ApiResponse.error(
         "Redirect failed",
@@ -81,72 +134,80 @@ export const handleRedirect = async (req, res, next) => {
 
 function parseUserAgent(userAgent) {
   const ua = userAgent || navigator.userAgent;
-  
+
   // Device Type
-  let type = 'desktop';
+  let type = "desktop";
   if (/(tablet|ipad|playbook|silk)|(android(?!.*mobi))/i.test(ua)) {
-    type = 'tablet';
-  } else if (/Mobile|Android|iP(hone|od)|IEMobile|BlackBerry|Kindle|Silk-Accelerated|(hpw|web)OS|Opera M(obi|ini)/.test(ua)) {
-    type = 'mobile';
+    type = "tablet";
+  } else if (
+    /Mobile|Android|iP(hone|od)|IEMobile|BlackBerry|Kindle|Silk-Accelerated|(hpw|web)OS|Opera M(obi|ini)/.test(
+      ua
+    )
+  ) {
+    type = "mobile";
   }
-  
+
   // Browser Detection
-  let browser = 'Unknown';
-  let browserVersion = '';
-  
+  let browser = "Unknown";
+  let browserVersion = "";
+
   const browserPatterns = [
-    { name: 'Edge', pattern: /Edg\/([0-9.]+)/ },
-    { name: 'Chrome', pattern: /Chrome\/([0-9.]+)/, exclude: /Edg/ },
-    { name: 'Safari', pattern: /Version\/([0-9.]+).*Safari/, exclude: /Chrome/ },
-    { name: 'Firefox', pattern: /Firefox\/([0-9.]+)/ },
-    { name: 'Opera', pattern: /(?:Opera|OPR)\/([0-9.]+)/ },
-    { name: 'IE', pattern: /(?:MSIE |rv:)([0-9.]+)/ }
+    { name: "Edge", pattern: /Edg\/([0-9.]+)/ },
+    { name: "Chrome", pattern: /Chrome\/([0-9.]+)/, exclude: /Edg/ },
+    {
+      name: "Safari",
+      pattern: /Version\/([0-9.]+).*Safari/,
+      exclude: /Chrome/,
+    },
+    { name: "Firefox", pattern: /Firefox\/([0-9.]+)/ },
+    { name: "Opera", pattern: /(?:Opera|OPR)\/([0-9.]+)/ },
+    { name: "IE", pattern: /(?:MSIE |rv:)([0-9.]+)/ },
   ];
-  
+
   for (const { name, pattern, exclude } of browserPatterns) {
     if ((!exclude || !exclude.test(ua)) && pattern.test(ua)) {
       browser = name;
       const match = ua.match(pattern);
-      browserVersion = match ? match[1] : '';
+      browserVersion = match ? match[1] : "";
       break;
     }
   }
-  
+
   // OS Detection
-  let os = 'Unknown';
-  let osVersion = '';
-  
-  if (ua.includes('Windows NT 10.0')) {
-    os = 'Windows';
-    osVersion = '10/11';
-  } else if (ua.includes('Windows NT')) {
-    os = 'Windows';
+  let os = "Unknown";
+  let osVersion = "";
+
+  if (ua.includes("Windows NT 10.0")) {
+    os = "Windows";
+    osVersion = "10/11";
+  } else if (ua.includes("Windows NT")) {
+    os = "Windows";
     const versionMatch = ua.match(/Windows NT ([0-9.]+)/);
-    osVersion = versionMatch ? versionMatch[1] : '';
-  } else if (ua.includes('Mac OS X')) {
-    os = 'macOS';
+    osVersion = versionMatch ? versionMatch[1] : "";
+  } else if (ua.includes("Mac OS X")) {
+    os = "macOS";
     const versionMatch = ua.match(/Mac OS X ([0-9_]+)/);
-    osVersion = versionMatch ? versionMatch[1].replace(/_/g, '.') : '';
-  } else if (ua.includes('iPhone')) {
-    os = 'iOS';
+    osVersion = versionMatch ? versionMatch[1].replace(/_/g, ".") : "";
+  } else if (ua.includes("iPhone")) {
+    os = "iOS";
     const versionMatch = ua.match(/OS ([0-9_]+)/);
-    osVersion = versionMatch ? versionMatch[1].replace(/_/g, '.') : '';
-  } else if (ua.includes('iPad')) {
-    os = 'iPadOS';
+    osVersion = versionMatch ? versionMatch[1].replace(/_/g, ".") : "";
+  } else if (ua.includes("iPad")) {
+    os = "iPadOS";
     const versionMatch = ua.match(/OS ([0-9_]+)/);
-    osVersion = versionMatch ? versionMatch[1].replace(/_/g, '.') : '';
-  } else if (ua.includes('Android')) {
-    os = 'Android';
+    osVersion = versionMatch ? versionMatch[1].replace(/_/g, ".") : "";
+  } else if (ua.includes("Android")) {
+    os = "Android";
     const versionMatch = ua.match(/Android ([0-9.]+)/);
-    osVersion = versionMatch ? versionMatch[1] : '';
-  } else if (ua.includes('Linux')) {
-    os = 'Linux';
+    osVersion = versionMatch ? versionMatch[1] : "";
+  } else if (ua.includes("Linux")) {
+    os = "Linux";
   }
-  
+
   return {
     type,
     browser: browserVersion ? `${browser} ${browserVersion}` : browser,
-    os: osVersion ? `${os} ${osVersion}` : os
+    os: osVersion ? `${os} ${osVersion}` : os,
   };
 }
 
